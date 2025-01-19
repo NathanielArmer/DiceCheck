@@ -1,0 +1,14 @@
+C:\Users\npsf3\CascadeProjects\DiceCheck\bin\Debug\net9.0\DiceCheck.exe
+C:\Users\npsf3\CascadeProjects\DiceCheck\bin\Debug\net9.0\DiceCheck.deps.json
+C:\Users\npsf3\CascadeProjects\DiceCheck\bin\Debug\net9.0\DiceCheck.runtimeconfig.json
+C:\Users\npsf3\CascadeProjects\DiceCheck\bin\Debug\net9.0\DiceCheck.dll
+C:\Users\npsf3\CascadeProjects\DiceCheck\bin\Debug\net9.0\DiceCheck.pdb
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.AssemblyInfoInputs.cache
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.AssemblyInfo.cs
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.csproj.CoreCompileInputs.cache
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.dll
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\refint\DiceCheck.dll
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.pdb
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.genruntimeconfig.cache
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\ref\DiceCheck.dll
