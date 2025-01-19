@@ -1,88 +1,139 @@
-using System;
-using System.Diagnostics;
-using System.Threading.Tasks;
-using System.Collections.Concurrent;
+using DiceCheck.Models;
 
-namespace DiceCheck
+namespace DiceCheck;
+
+public class Program
 {
-    public class Program
+    private const int DefaultSimulations = 1_000_000;
+
+    public static void Main(string[] args)
     {
-        public static void Main(string[] args)
+        Console.WriteLine("DiceCheck - Monte Carlo Dice Roll Simulator");
+
+        var (roll1, condition1, roll2, condition2, simulations) = args.Length switch
         {
-            Console.WriteLine("Monte Carlo Simulation: d6 vs d12x2");
-            Console.WriteLine("Comparing odds of rolling 1 on d6 vs rolling at least one 1 on two d12s");
-            Console.WriteLine("----------------------------------------");
+            0 => GetInteractiveInput(),
+            >= 8 => ParseCommandLineArgs(args),
+            _ => throw new ArgumentException("Invalid number of arguments. Use no arguments for interactive mode, or provide: dice1 sides1 condition1 value1 [count1] dice2 sides2 condition2 value2 [count2] [simulations]")
+        };
 
-            const int simulations = 10_000_000;
-            const int batchSize = 100_000; // Process in batches for better performance
-            int numberOfBatches = simulations / batchSize;
+        var startTime = DateTime.Now;
+        var (prob1, prob2) = SimulateScenarios(roll1, condition1, roll2, condition2, simulations);
+        var duration = DateTime.Now - startTime;
 
-            var stopwatch = Stopwatch.StartNew();
+        Console.WriteLine($"\nResults after {simulations:N0} simulations (completed in {duration.TotalMilliseconds:N0}ms):");
+        Console.WriteLine($"Scenario 1: {roll1.Count}d{roll1.Sides} with condition {condition1}");
+        Console.WriteLine($"Probability: {prob1:P3}");
+        Console.WriteLine($"Scenario 2: {roll2.Count}d{roll2.Sides} with condition {condition2}");
+        Console.WriteLine($"Probability: {prob2:P3}\n");
+        Console.WriteLine($"Difference in probabilities: {Math.Abs(prob1 - prob2):P3}");
+        Console.WriteLine(prob1 > prob2 ? "Scenario 1 is more likely!" : prob1 < prob2 ? "Scenario 2 is more likely!" : "Both scenarios are equally likely!");
+    }
 
-            var d6Results = new ConcurrentBag<int>();
-            var d12Results = new ConcurrentBag<int>();
+    private static (double prob1, double prob2) SimulateScenarios(DiceRoll roll1, RollCondition condition1, DiceRoll roll2, RollCondition condition2, int simulations)
+    {
+        const int BatchSize = 10_000;
+        int numberOfBatches = simulations / BatchSize;
+        var remainingSimulations = simulations % BatchSize;
 
-            // Run simulations in parallel using Random.Shared
-            Parallel.For(0, numberOfBatches, _ =>
+        // Use thread-safe counters for parallel processing
+        int successes1 = 0;
+        int successes2 = 0;
+
+        // Process batches in parallel
+        Parallel.For(0, numberOfBatches, _ =>
+        {
+            int batchSuccesses1 = 0;
+            int batchSuccesses2 = 0;
+
+            for (int i = 0; i < BatchSize; i++)
             {
-                int localD6Successes = 0;
-                int localD12Successes = 0;
-
-                for (int i = 0; i < batchSize; i++)
-                {
-                    // Check d6
-                    if (Random.Shared.Next(1, 7) == 1)
-                    {
-                        localD6Successes++;
-                    }
-
-                    // Check d12 (rolled twice)
-                    int firstD12 = Random.Shared.Next(1, 13);
-                    int secondD12 = Random.Shared.Next(1, 13);
-                    if (firstD12 == 1 || secondD12 == 1)
-                    {
-                        localD12Successes++;
-                    }
-                }
-
-                d6Results.Add(localD6Successes);
-                d12Results.Add(localD12Successes);
-            });
-
-            stopwatch.Stop();
-
-            // Calculate total successes
-            int d6Successes = 0;
-            int d12Successes = 0;
-            foreach (var result in d6Results) d6Successes += result;
-            foreach (var result in d12Results) d12Successes += result;
-
-            // Calculate and display probabilities
-            double d6Probability = (double)d6Successes / simulations;
-            double d12Probability = (double)d12Successes / simulations;
-
-            Console.WriteLine($"\nResults after {simulations:N0} simulations (completed in {stopwatch.ElapsedMilliseconds:N0}ms):");
-            Console.WriteLine($"d6 probability of rolling 1: {d6Probability:P3}");
-            Console.WriteLine($"d12x2 probability of rolling at least one 1: {d12Probability:P3}");
-            Console.WriteLine($"\nTheoretical probabilities:");
-            Console.WriteLine($"d6: {1.0/6:P3}");
-            Console.WriteLine($"d12x2: {1 - (11.0/12 * 11.0/12):P3}");
-
-            var difference = Math.Abs(d6Probability - d12Probability);
-            Console.WriteLine($"\nDifference in probabilities: {difference:P3}");
-
-            if (d6Probability > d12Probability)
-            {
-                Console.WriteLine("Rolling a d6 has better odds of getting a 1!");
+                if (condition1.Evaluate(roll1.Roll())) batchSuccesses1++;
+                if (condition2.Evaluate(roll2.Roll())) batchSuccesses2++;
             }
-            else if (d12Probability > d6Probability)
+
+            Interlocked.Add(ref successes1, batchSuccesses1);
+            Interlocked.Add(ref successes2, batchSuccesses2);
+        });
+
+        // Process remaining simulations
+        if (remainingSimulations > 0)
+        {
+            for (int i = 0; i < remainingSimulations; i++)
             {
-                Console.WriteLine("Rolling two d12s has better odds of getting at least one 1!");
-            }
-            else
-            {
-                Console.WriteLine("The odds are exactly the same!");
+                if (condition1.Evaluate(roll1.Roll())) successes1++;
+                if (condition2.Evaluate(roll2.Roll())) successes2++;
             }
         }
+
+        return ((double)successes1 / simulations, (double)successes2 / simulations);
+    }
+
+    private static (DiceRoll, RollCondition, DiceRoll, RollCondition, int) GetInteractiveInput()
+    {
+        Console.WriteLine("\nScenario 1:");
+        var (roll1, condition1) = GetScenarioInput();
+
+        Console.WriteLine("\nScenario 2:");
+        var (roll2, condition2) = GetScenarioInput();
+
+        Console.Write("\nNumber of simulations (default: 1,000,000): ");
+        var input = Console.ReadLine();
+        int simulations = string.IsNullOrWhiteSpace(input) ? DefaultSimulations : int.Parse(input);
+
+        return (roll1, condition1, roll2, condition2, simulations);
+    }
+
+    private static (DiceRoll, RollCondition) GetScenarioInput()
+    {
+        Console.Write("Number of dice: ");
+        int count = int.Parse(Console.ReadLine() ?? "1");
+
+        Console.Write("Number of sides per die: ");
+        int sides = int.Parse(Console.ReadLine() ?? "6");
+
+        Console.WriteLine("\nCondition types:");
+        foreach (var type in Enum.GetValues<ConditionType>())
+        {
+            Console.WriteLine($"  {(int)type}. {type}");
+        }
+        Console.Write("Select condition type (number): ");
+        var conditionType = (ConditionType)int.Parse(Console.ReadLine() ?? "0");
+
+        if (conditionType == ConditionType.CountMatching)
+        {
+            Console.Write("How many matching dice? ");
+            int matchCount = int.Parse(Console.ReadLine() ?? "1");
+            Console.Write("What value to match? ");
+            int matchValue = int.Parse(Console.ReadLine() ?? "1");
+            return (new DiceRoll(sides, count), RollCondition.CreateCountMatching(matchCount, matchValue));
+        }
+        else
+        {
+            Console.Write("Condition value: ");
+            int value = int.Parse(Console.ReadLine() ?? "1");
+            return (new DiceRoll(sides, count), RollCondition.Create(conditionType, value));
+        }
+    }
+
+    private static (DiceRoll, RollCondition, DiceRoll, RollCondition, int) ParseCommandLineArgs(string[] args)
+    {
+        // Format: dice1 sides1 condition1 value1 [count1] dice2 sides2 condition2 value2 [count2] [simulations]
+        var roll1 = new DiceRoll(int.Parse(args[1]), int.Parse(args[0]));
+        var condition1 = (ConditionType)int.Parse(args[2]) == ConditionType.CountMatching
+            ? RollCondition.CreateCountMatching(int.Parse(args[4]), int.Parse(args[3]))
+            : RollCondition.Create((ConditionType)int.Parse(args[2]), int.Parse(args[3]));
+
+        int offset = (ConditionType)int.Parse(args[2]) == ConditionType.CountMatching ? 5 : 4;
+        
+        var roll2 = new DiceRoll(int.Parse(args[offset + 1]), int.Parse(args[offset]));
+        var condition2 = (ConditionType)int.Parse(args[offset + 2]) == ConditionType.CountMatching
+            ? RollCondition.CreateCountMatching(int.Parse(args[offset + 4]), int.Parse(args[offset + 3]))
+            : RollCondition.Create((ConditionType)int.Parse(args[offset + 2]), int.Parse(args[offset + 3]));
+
+        offset = offset + ((ConditionType)int.Parse(args[offset + 2]) == ConditionType.CountMatching ? 5 : 4);
+        int simulations = args.Length > offset ? int.Parse(args[offset]) : DefaultSimulations;
+
+        return (roll1, condition1, roll2, condition2, simulations);
     }
 }

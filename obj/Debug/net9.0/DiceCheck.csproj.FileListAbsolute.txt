@@ -12,3 +12,4 @@ C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\refint\DiceCheck.dll
 C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.pdb
 C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.genruntimeconfig.cache
 C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\ref\DiceCheck.dll
+C:\Users\npsf3\CascadeProjects\DiceCheck\obj\Debug\net9.0\DiceCheck.sourcelink.json

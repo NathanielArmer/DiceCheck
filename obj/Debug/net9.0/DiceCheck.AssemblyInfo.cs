@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DiceCheck")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e7604bce903bd851bd2e87ed6ede9ca09e98b8cf")]
 [assembly: System.Reflection.AssemblyProductAttribute("DiceCheck")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DiceCheck")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
