@@ -1,11 +1,12 @@
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using System.Web;
 using Xunit;
 
 namespace DiceCheck.Web.UITests;
 
-[Collection("UI Tests")]
-public class UITests : IAsyncLifetime
+[Collection("Sequential")]
+public class UITests : IClassFixture<PlaywrightFixture>
 {
     private readonly PlaywrightFixture _fixture;
     private IPage Page => _fixture.Page ?? throw new InvalidOperationException("Page not initialized");
@@ -203,6 +204,181 @@ public class UITests : IAsyncLifetime
         Assert.Contains("Sum greater than 8", allConditionText, StringComparison.OrdinalIgnoreCase);
     }
 
+    public record ConditionTestData(string Type, string Value, string? Count = null);
+
+    public static TheoryData<ConditionTestData> ConditionTypes => new()
+    {
+        new ConditionTestData("sumEquals", "10"),      // 3d6 sum = 10
+        new ConditionTestData("sumGreaterThan", "15"), // 3d6 sum > 15
+        new ConditionTestData("sumLessThan", "5"),     // 3d6 sum < 5
+        new ConditionTestData("atLeastOne", "6"),      // 3d6 at least one 6
+        new ConditionTestData("all", "6"),             // 3d6 all 6's
+        new ConditionTestData("countMatching", "6", "2")  // 3d6 exactly 2 sixes
+    };
+
+    [Theory]
+    [MemberData(nameof(ConditionTypes))]
+    public async Task RollDice_WithConditionType_ShowsResults(ConditionTestData testData)
+    {
+        await NavigateToPage();
+        await WaitForJavaScriptLoad();
+
+        // Set basic dice parameters
+        await Page.FillAsync("#sides", "6");
+        await Page.FillAsync("#numberOfDice", "3");
+
+        // Get the existing condition container
+        var container = await Page.QuerySelectorAsync("#conditions > div");
+        Assert.NotNull(container);
+
+        var typeSelect = await container.QuerySelectorAsync("[data-testid='conditionType']");
+        Assert.NotNull(typeSelect);
+        await typeSelect.SelectOptionAsync(testData.Type);
+
+        var valueInput = await container.QuerySelectorAsync("[data-testid='conditionValue']");
+        Assert.NotNull(valueInput);
+        await valueInput.FillAsync(testData.Value);
+        // Trigger input change event
+        await Page.EvaluateAsync(@"() => {
+            const input = document.querySelector('[data-testid=""conditionValue""]');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }");
+        await Page.WaitForTimeoutAsync(100); // Wait for event handlers
+
+        if (testData.Count != null)
+        {
+            var countInput = await container.QuerySelectorAsync("[data-testid='conditionCount']");
+            Assert.NotNull(countInput);
+
+            // Wait for count input to be visible and fill it
+            await Page.WaitForSelectorAsync("[data-testid='conditionCount']:not(.hidden)");
+            await countInput.FillAsync(testData.Count);
+            // Trigger input change event
+            await Page.EvaluateAsync(@"() => {
+                const input = document.querySelector('[data-testid=""conditionCount""]');
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }");
+            await Page.WaitForTimeoutAsync(100); // Wait for event handlers
+        }
+
+        // Roll the dice
+        await Page.ClickAsync("#rollButton");
+
+        // Wait for either results or error
+        var resultsOrError = await Page.WaitForSelectorAsync("#results:not(.hidden), #error:not(.hidden)");
+        Assert.NotNull(resultsOrError);
+
+        // Check if we got an error
+        var error = await Page.QuerySelectorAsync("#error:not(.hidden)");
+        if (error != null)
+        {
+            var errorText = await error.TextContentAsync();
+            Assert.Fail($"Got error: {errorText}");
+        }
+
+        // Verify URL contains the condition
+        var url = new Uri(await Page.EvaluateAsync<string>("window.location.href"));
+        var query = HttpUtility.ParseQueryString(url.Query);
+
+        Assert.Equal("6", query.Get("sides"));
+        Assert.Equal("3", query.Get("numberOfDice"));
+
+        var conditionTypes = query.GetValues("conditionType");
+        Assert.NotNull(conditionTypes);
+        Assert.Single(conditionTypes);
+        Assert.Equal(testData.Type, conditionTypes[0]);
+
+        var conditionValues = query.GetValues("conditionValue");
+        Assert.NotNull(conditionValues);
+        Assert.Single(conditionValues);
+        Assert.Equal(testData.Value, conditionValues[0]);
+
+        if (testData.Count != null)
+        {
+            var conditionCounts = query.GetValues("conditionCount");
+            Assert.NotNull(conditionCounts);
+            Assert.Single(conditionCounts);
+            Assert.Equal(testData.Count, conditionCounts[0]);
+        }
+
+        // Verify dice values are displayed
+        var diceValues = await Page.QuerySelectorAllAsync(".dice-value");
+        Assert.Equal(3, diceValues.Count); // We rolled 3 dice
+
+        // Verify sum is shown
+        var sum = await Page.QuerySelectorAsync("#sum");
+        Assert.NotNull(sum);
+        var sumText = await sum.TextContentAsync();
+        Assert.Contains("Sum:", sumText ?? string.Empty);
+
+        // Verify condition results are shown
+        var conditionResults = await Page.QuerySelectorAsync("#conditionResults");
+        Assert.NotNull(conditionResults);
+        var conditionResultsText = await conditionResults.TextContentAsync();
+        Assert.NotNull(conditionResultsText);
+        Assert.Contains("Satisfied", conditionResultsText);
+    }
+
+    public static TheoryData<ConditionTestData> QueryStringTestData => new()
+    {
+        new ConditionTestData("sumEquals", "10"),
+        new ConditionTestData("sumGreaterThan", "15"),
+        new ConditionTestData("sumLessThan", "5"),
+        new ConditionTestData("atLeastOne", "6"),
+        new ConditionTestData("all", "6"),
+        new ConditionTestData("countMatching", "6", "2")
+    };
+
+    [Theory]
+    [MemberData(nameof(QueryStringTestData))]
+    public async Task LoadFromQueryString_LoadsConditionType(ConditionTestData testData)
+    {
+        // Construct condition JSON
+        var conditionsJson = testData.Count != null 
+            ? $"[{{\"type\":\"{testData.Type}\",\"value\":\"{testData.Value}\",\"count\":\"{testData.Count}\"}}]"
+            : $"[{{\"type\":\"{testData.Type}\",\"value\":\"{testData.Value}\"}}]";
+        
+        // URL encode the conditions JSON
+        var encodedConditions = Uri.EscapeDataString(conditionsJson);
+        var queryString = $"?sides=6&numberOfDice=3&conditions={encodedConditions}";
+
+        await Page.GotoAsync($"{_fixture.ServerAddress}{queryString}");
+        await WaitForJavaScriptLoad();
+
+        // Verify form values
+        Assert.Equal("6", await Page.InputValueAsync("#sides"));
+        Assert.Equal("3", await Page.InputValueAsync("#numberOfDice"));
+
+        // Verify condition
+        var container = await Page.QuerySelectorAsync("#conditions > div");
+        Assert.NotNull(container);
+
+        var typeSelect = await container.QuerySelectorAsync("[data-testid='conditionType']");
+        var valueInput = await container.QuerySelectorAsync("[data-testid='conditionValue']");
+        Assert.NotNull(typeSelect);
+        Assert.NotNull(valueInput);
+
+        var type = await typeSelect.EvaluateAsync<string>("el => el.value");
+        var value = await valueInput.EvaluateAsync<string>("el => el.value");
+
+        Assert.Equal(testData.Type, type);
+        Assert.Equal(testData.Value, value);
+
+        if (testData.Count != null)
+        {
+            var countInput = await container.QuerySelectorAsync("[data-testid='conditionCount']");
+            Assert.NotNull(countInput);
+            var count = await countInput.EvaluateAsync<string>("el => el.value");
+            Assert.Equal(testData.Count, count);
+            
+            // Verify count input is visible
+            var isHidden = await countInput.EvaluateAsync<bool>("el => el.classList.contains('hidden')");
+            Assert.False(isHidden);
+        }
+    }
+
     [Fact]
     public async Task LoadFromQueryString_SetsCorrectValues()
     {
@@ -290,7 +466,8 @@ public class UITests : IAsyncLifetime
             const params = new URLSearchParams(window.location.search);
             return params.get('sides') === '12' && 
                    params.get('numberOfDice') === '3' &&
-                   params.get('conditions') !== null;
+                   params.get('conditionType') === 'sumGreaterThan' &&
+                   params.get('conditionValue') === '10';
         }", new PageWaitForFunctionOptions { 
             Timeout = 10000,
             PollingInterval = 100
@@ -298,16 +475,13 @@ public class UITests : IAsyncLifetime
 
         // Get URL parameters
         var url = await Page.EvaluateAsync<string>("window.location.search");
-        var query = System.Web.HttpUtility.ParseQueryString(url);
+        var query = HttpUtility.ParseQueryString(url);
 
         // Verify URL parameters
         Assert.Equal("12", query["sides"]);
         Assert.Equal("3", query["numberOfDice"]);
-
-        // Parse conditions from URL
-        var conditionsJson = System.Web.HttpUtility.UrlDecode(query["conditions"] ?? "[]");
-        var conditions = System.Text.Json.JsonSerializer.Deserialize<List<object>>(conditionsJson) ?? new List<object>();
-        Assert.Single(conditions);
+        Assert.Equal("sumGreaterThan", query["conditionType"]);
+        Assert.Equal("10", query["conditionValue"]);
     }
 
     [Fact]
@@ -329,45 +503,59 @@ public class UITests : IAsyncLifetime
             PollingInterval = 100
         });
 
-        // Set second condition values
-        var conditions = await Page.QuerySelectorAllAsync("#conditions > div");
-        var secondCondition = conditions[1];
-        var typeSelect = await secondCondition.QuerySelectorAsync("[data-testid='conditionType']");
-        var valueInput = await secondCondition.QuerySelectorAsync("[data-testid='conditionValue']");
-        
-        await typeSelect!.SelectOptionAsync("sumGreaterThan");
-        await valueInput!.FillAsync("15");
-        
-        await Page.WaitForFunctionAsync(@"() => window._queryParamsLoaded === true");
+        var secondConditionType = await Page.QuerySelectorAllAsync("[data-testid='conditionType']");
+        await secondConditionType[1].SelectOptionAsync("countMatching");
+        var secondConditionValue = await Page.QuerySelectorAllAsync("[data-testid='conditionValue']");
+        await secondConditionValue[1].FillAsync("6");
+        var countInput = await Page.QuerySelectorAllAsync("[data-testid='conditionCount']");
+        await countInput[1].FillAsync("2");
 
-        // Remove the first condition
-        await Page.ClickAsync("#conditions >> button:has-text('Remove')");
+        // Wait for URL to update with both conditions
         await Page.WaitForFunctionAsync(@"() => {
-            try {
-                const params = new URLSearchParams(window.location.search);
-                const conditions = JSON.parse(params.get('conditions') || '[]');
-                return Array.isArray(conditions) && conditions.length === 1;
-            } catch (e) {
-                return false;
-            }
+            const params = new URLSearchParams(window.location.search);
+            const types = params.getAll('conditionType');
+            const values = params.getAll('conditionValue');
+            return types.length === 2 && values.length === 2;
         }", new PageWaitForFunctionOptions { 
             Timeout = 10000,
             PollingInterval = 100
         });
 
-        // Remove the second condition
-        await Page.ClickAsync("#conditions >> button:has-text('Remove')");
+        // Get URL before removing condition
+        var urlBefore = await Page.EvaluateAsync<string>("window.location.search");
+        var queryBefore = HttpUtility.ParseQueryString(urlBefore);
+        var typesBefore = queryBefore.GetValues("conditionType");
+        var valuesBefore = queryBefore.GetValues("conditionValue");
+        Assert.NotNull(typesBefore);
+        Assert.NotNull(valuesBefore);
+        Assert.Equal(2, typesBefore.Length);
+        Assert.Equal(2, valuesBefore.Length);
+
+        // Remove second condition
+        var removeButtons = await Page.QuerySelectorAllAsync("#conditions button:has-text('Remove')");
+        await removeButtons[1].ClickAsync();
+
+        // Wait for URL to update with only one condition
         await Page.WaitForFunctionAsync(@"() => {
-            try {
-                const params = new URLSearchParams(window.location.search);
-                const conditions = JSON.parse(params.get('conditions') || '[]');
-                return Array.isArray(conditions) && conditions.length === 0;
-            } catch (e) {
-                return false;
-            }
+            const params = new URLSearchParams(window.location.search);
+            const types = params.getAll('conditionType');
+            const values = params.getAll('conditionValue');
+            return types.length === 1 && values.length === 1;
         }", new PageWaitForFunctionOptions { 
             Timeout = 10000,
             PollingInterval = 100
         });
+
+        // Get URL after removing condition
+        var urlAfter = await Page.EvaluateAsync<string>("window.location.search");
+        var queryAfter = HttpUtility.ParseQueryString(urlAfter);
+        var typesAfter = queryAfter.GetValues("conditionType");
+        var valuesAfter = queryAfter.GetValues("conditionValue");
+        Assert.NotNull(typesAfter);
+        Assert.NotNull(valuesAfter);
+        Assert.Single(typesAfter);
+        Assert.Single(valuesAfter);
+        Assert.Equal("sumGreaterThan", typesAfter[0]);
+        Assert.Equal("10", valuesAfter[0]);
     }
 }

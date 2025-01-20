@@ -98,7 +98,7 @@ public class PlaywrightFixture : WebApplicationFactory<Program>, IAsyncLifetime
             _playwright = await Playwright.CreateAsync();
             _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
-                Headless = true,
+                Headless = !System.Diagnostics.Debugger.IsAttached,
                 Args = new[] { "--no-sandbox" }
             });
             

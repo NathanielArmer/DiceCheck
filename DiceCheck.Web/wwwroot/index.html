@@ -123,9 +123,12 @@
             typeSelect.setAttribute('data-testid', 'conditionType');
             
             const options = [
+                { value: 'sumEquals', text: 'Sum equals' },
                 { value: 'sumGreaterThan', text: 'Sum greater than' },
                 { value: 'sumLessThan', text: 'Sum less than' },
-                { value: 'countMatching', text: 'Count matching' }
+                { value: 'atLeastOne', text: 'At least one die shows' },
+                { value: 'all', text: 'All dice show' },
+                { value: 'countMatching', text: 'Exactly N dice show' }
             ];
             
             options.forEach(opt => {
@@ -139,53 +142,49 @@
             valueInput.type = 'number';
             valueInput.className = 'w-20 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500';
             valueInput.setAttribute('data-testid', 'conditionValue');
-            
+            valueInput.min = '1';
+
             const countInput = document.createElement('input');
             countInput.type = 'number';
-            countInput.className = 'w-20 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500';
+            countInput.className = 'w-20 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 hidden';
             countInput.setAttribute('data-testid', 'conditionCount');
-            countInput.style.display = 'none';
-            
+            countInput.min = '1';
+            countInput.placeholder = 'Count';
+
+            // Show/hide count input based on condition type
+            typeSelect.addEventListener('change', () => {
+                countInput.classList.toggle('hidden', typeSelect.value !== 'countMatching');
+                if (typeSelect.value === 'countMatching') {
+                    countInput.value = countInput.value || '1';
+                }
+                updateUrlFromInputs();
+            });
+
+            // Add event listeners for value and count changes
+            valueInput.addEventListener('input', updateUrlFromInputs);
+            countInput.addEventListener('input', updateUrlFromInputs);
+
             const removeButton = document.createElement('button');
+            removeButton.className = 'px-2 py-1 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500';
             removeButton.textContent = 'Remove';
-            removeButton.className = 'px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500';
             removeButton.onclick = () => removeCondition(removeButton);
-            
+
             container.appendChild(typeSelect);
             container.appendChild(valueInput);
             container.appendChild(countInput);
             container.appendChild(removeButton);
-            
+
             document.getElementById('conditions').appendChild(container);
-            
-            // Add event listeners for URL updates
-            typeSelect.addEventListener('change', () => {
-                window._queryParamsLoaded = true;
-                updateUrlFromInputs();
-                const isCountMatching = typeSelect.value === 'countMatching';
-                countInput.style.display = isCountMatching ? 'block' : 'none';
-            });
-            
-            valueInput.addEventListener('input', () => {
-                window._queryParamsLoaded = true;
-                updateUrlFromInputs();
-            });
-            
-            countInput.addEventListener('input', () => {
-                window._queryParamsLoaded = true;
-                updateUrlFromInputs();
-            });
-            
+
             if (condition) {
                 typeSelect.value = condition.type;
                 valueInput.value = condition.value;
-                if (condition.type === 'countMatching') {
-                    countInput.style.display = 'block';
+                if (condition.type === 'countMatching' && condition.count) {
                     countInput.value = condition.count;
+                    countInput.classList.remove('hidden');
                 }
             }
-            
-            window._queryParamsLoaded = true;
+
             updateUrlFromInputs();
         }
 
@@ -196,28 +195,40 @@
         }
 
         function updateUrlFromInputs() {
-            const sides = parseInt(document.getElementById('sides').value);
-            const numberOfDice = parseInt(document.getElementById('numberOfDice').value);
+            const sides = document.getElementById('sides').value;
+            const numberOfDice = document.getElementById('numberOfDice').value;
             const conditions = [];
-            
-            document.querySelectorAll('#conditions > div').forEach(container => {
-                const type = container.querySelector('[data-testid="conditionType"]').value;
-                const value = parseInt(container.querySelector('[data-testid="conditionValue"]').value);
-                
-                if (!isNaN(value)) {
-                    if (type === 'countMatching') {
-                        const count = parseInt(container.querySelector('[data-testid="conditionCount"]').value);
-                        if (!isNaN(count)) {
-                            conditions.push({ type, value, count });
-                        }
-                    } else {
-                        conditions.push({ type, value });
-                    }
+
+            // Get all condition containers
+            const containers = document.getElementById('conditions').children;
+            for (const container of containers) {
+                const type = container.querySelector('select').value;
+                const value = container.querySelector('input[data-testid="conditionValue"]').value;
+                const count = container.querySelector('input[data-testid="conditionCount"]').value;
+
+                const condition = { type, value };
+                if (type === 'countMatching' && count) {
+                    condition.count = count;
+                }
+                conditions.push(condition);
+            }
+
+            // Build query string
+            const params = new URLSearchParams();
+            params.set('sides', sides);
+            params.set('numberOfDice', numberOfDice);
+
+            conditions.forEach((condition, index) => {
+                params.append('conditionType', condition.type);
+                params.append('conditionValue', condition.value);
+                if (condition.type === 'countMatching') {
+                    params.append('conditionCount', condition.count);
                 }
             });
 
-            console.log('Updating URL with conditions:', JSON.stringify(conditions, null, 2));
-            updateQueryString(sides, numberOfDice, conditions);
+            // Update URL without reloading page
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.pushState({ path: newUrl }, '', newUrl);
         }
 
         async function rollDice() {
@@ -230,43 +241,40 @@
             results.classList.add('hidden');
             error.classList.add('hidden');
 
-            // Validate inputs
-            if (sides <= 0) {
-                error.textContent = "Number of sides must be positive";
-                error.classList.remove('hidden');
-                return;
-            }
-
-            if (numberOfDice <= 0) {
-                error.textContent = "Number of dice must be positive";
-                error.classList.remove('hidden');
-                return;
-            }
-            
-            // Collect conditions
-            const conditions = [];
-            document.querySelectorAll('#conditions > div').forEach(container => {
-                const type = container.querySelector('[data-testid="conditionType"]').value;
-                const valueInput = container.querySelector('[data-testid="conditionValue"]');
-                const value = parseInt(valueInput.value);
-                const countInput = container.querySelector('[data-testid="conditionCount"]');
-                
-                if (isNaN(value)) {
-                    throw new Error(`Please enter a valid number for condition value`);
-                }
-                
-                if (type === 'countMatching') {
-                    const count = parseInt(countInput.value);
-                    if (isNaN(count)) {
-                        throw new Error(`Please enter a valid number for count`);
-                    }
-                    conditions.push({ type: type, value: value, count: count });
-                } else {
-                    conditions.push({ type: type, value: value });
-                }
-            });
-
             try {
+                // Validate inputs
+                if (sides <= 0) {
+                    throw new Error("Number of sides must be positive");
+                }
+
+                if (numberOfDice <= 0) {
+                    throw new Error("Number of dice must be positive");
+                }
+                
+                // Collect conditions
+                const conditions = [];
+                const containers = document.querySelectorAll('#conditions > div');
+                for (const container of containers) {
+                    const type = container.querySelector('[data-testid="conditionType"]').value;
+                    const valueInput = container.querySelector('[data-testid="conditionValue"]');
+                    const value = valueInput.value.trim();
+                    const countInput = container.querySelector('[data-testid="conditionCount"]');
+                    
+                    if (!value || isNaN(parseInt(value))) {
+                        throw new Error(`Please enter a valid number for condition value`);
+                    }
+                    
+                    if (type === 'countMatching') {
+                        const count = countInput.value.trim();
+                        if (!count || isNaN(parseInt(count))) {
+                            throw new Error(`Please enter a valid number for count`);
+                        }
+                        conditions.push({ type: type, value: parseInt(value), count: parseInt(count) });
+                    } else {
+                        conditions.push({ type: type, value: parseInt(value) });
+                    }
+                }
+
                 console.log('Sending request:', { sides, numberOfDice, conditions });
                 const response = await fetch('/api/roll', {
                     method: 'POST',
