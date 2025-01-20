@@ -12,9 +12,13 @@ namespace DiceCheck.Web.UITests;
 
 public class PlaywrightFixture : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private IHost? _host;
-    private IPlaywright? _playwright;
-    private IBrowser? _browser;
+    private static IHost? _staticHost;
+    private static IPlaywright? _staticPlaywright;
+    private static IBrowser? _staticBrowser;
+    private static readonly object _lock = new object();
+    private static bool _initialized;
+    private static string? _serverAddress;
+
     private IBrowserContext? _context;
     public IPage? Page { get; private set; }
 
@@ -23,43 +27,47 @@ public class PlaywrightFixture : WebApplicationFactory<Program>, IAsyncLifetime
         get
         {
             EnsureServer();
-            var address = ClientOptions.BaseAddress.ToString();
-            return address.EndsWith("/") ? address : address + "/";
+            return _serverAddress ?? throw new InvalidOperationException("Server address not initialized");
         }
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
     {
-        // Create the host for TestServer
         var testHost = builder.Build();
 
-        // Modify the host builder to use Kestrel instead of TestServer
-        builder.ConfigureWebHost(webHostBuilder => webHostBuilder
-            .UseKestrel()
-            .UseUrls("http://127.0.0.1:0")); // Use port 0 for dynamic port assignment
+        if (_staticHost == null)
+        {
+            lock (_lock)
+            {
+                if (_staticHost == null)
+                {
+                    builder.ConfigureWebHost(webHostBuilder => webHostBuilder
+                        .UseKestrel()
+                        .UseUrls("http://127.0.0.1:0"));
 
-        // Create and start the Kestrel server
-        _host = builder.Build();
-        _host.Start();
+                    _staticHost = builder.Build();
+                    _staticHost.Start();
 
-        // Get the server address
-        var server = _host.Services.GetRequiredService<IServer>();
-        var addresses = server.Features.Get<IServerAddressesFeature>();
-        
-        if (addresses == null || !addresses.Addresses.Any())
-            throw new InvalidOperationException("No server addresses available.");
+                    var server = _staticHost.Services.GetRequiredService<IServer>();
+                    var addresses = server.Features.Get<IServerAddressesFeature>();
+                    
+                    if (addresses == null || !addresses.Addresses.Any())
+                        throw new InvalidOperationException("No server addresses available.");
 
-        ClientOptions.BaseAddress = addresses.Addresses
-            .Select(x => new Uri(x))
-            .Last();
+                    _serverAddress = addresses.Addresses
+                        .Select(x => new Uri(x))
+                        .Last()
+                        .ToString();
+                }
+            }
+        }
 
-        // Return the TestServer host
         return testHost;
     }
 
     private void EnsureServer()
     {
-        if (_host is null)
+        if (_staticHost == null)
         {
             using var _ = CreateDefaultClient();
         }
@@ -69,111 +77,105 @@ public class PlaywrightFixture : WebApplicationFactory<Program>, IAsyncLifetime
     {
         EnsureServer();
         
-        // Try to connect to the server
         using var client = new HttpClient();
-        for (int i = 0; i < 5; i++)
+        var maxAttempts = 3;
+        var currentAttempt = 0;
+        var delay = TimeSpan.FromSeconds(1);
+
+        while (currentAttempt < maxAttempts)
         {
             try
             {
-                var response = await client.GetAsync(ServerAddress);
+                var response = await client.GetAsync(_serverAddress);
                 if (response.IsSuccessStatusCode)
-                {
                     return;
-                }
             }
             catch
             {
-                await Task.Delay(1000);
+                // Ignore and retry
             }
+
+            currentAttempt++;
+            if (currentAttempt < maxAttempts)
+                await Task.Delay(delay);
         }
-        throw new Exception("Server failed to start");
+
+        throw new Exception("Server failed to start after multiple attempts");
     }
 
     public async Task InitializeAsync()
     {
+        if (!_initialized)
+        {
+            lock (_lock)
+            {
+                if (!_initialized)
+                {
+                    _staticPlaywright = Playwright.CreateAsync().GetAwaiter().GetResult();
+                    _staticBrowser = _staticPlaywright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                    {
+                        Headless = !System.Diagnostics.Debugger.IsAttached,
+                        Args = new[] { "--no-sandbox" }
+                    }).GetAwaiter().GetResult();
+                    _initialized = true;
+                }
+            }
+        }
+
         await EnsureServerReady();
 
-        try
+        // Create a new context for each test
+        _context = await _staticBrowser!.NewContextAsync(new BrowserNewContextOptions
         {
-            _playwright = await Playwright.CreateAsync();
-            _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-            {
-                Headless = !System.Diagnostics.Debugger.IsAttached,
-                Args = new[] { "--no-sandbox" }
-            });
-            
-            _context = await _browser.NewContextAsync(new BrowserNewContextOptions
-            {
-                IgnoreHTTPSErrors = true,
-                JavaScriptEnabled = true
-            });
-            
-            Page = await _context.NewPageAsync();
-            
-            // Set longer timeouts for tests
-            Page.SetDefaultNavigationTimeout(3000);
-            Page.SetDefaultTimeout(3000);
-        }
-        catch
-        {
-            throw;
-        }
+            IgnoreHTTPSErrors = true,
+            JavaScriptEnabled = true,
+            ViewportSize = new ViewportSize { Width = 1920, Height = 1080 }
+        });
+        
+        Page = await _context.NewPageAsync();
+        
+        // Set longer timeouts for tests
+        Page.SetDefaultTimeout(5000);
+        Page.SetDefaultNavigationTimeout(5000);
     }
 
     public new async Task DisposeAsync()
     {
-        try
+        if (Page != null)
         {
-            if (Page != null)
-            {
-                await Page.CloseAsync();
-                Page = null;
-            }
-
-            if (_context != null)
-            {
-                await _context.CloseAsync();
-                await _context.DisposeAsync();
-                _context = null;
-            }
-
-            if (_browser != null)
-            {
-                await _browser.CloseAsync();
-                await _browser.DisposeAsync();
-                _browser = null;
-            }
-
-            if (_playwright != null)
-            {
-                _playwright.Dispose();
-                _playwright = null;
-            }
-
-            if (_host != null)
-            {
-                try
-                {
-                    await _host.StopAsync(TimeSpan.FromSeconds(5));
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error during host shutdown: {ex.Message}");
-                }
-                finally
-                {
-                    _host.Dispose();
-                    _host = null;
-                }
-            }
-
-            await base.DisposeAsync();
+            await Page.CloseAsync();
+            Page = null;
         }
-        catch (Exception ex)
+
+        if (_context != null)
         {
-            Console.WriteLine($"Error during disposal: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-            throw;
+            await _context.CloseAsync();
+            await _context.DisposeAsync();
+            _context = null;
         }
+
+        await base.DisposeAsync();
+    }
+
+    public static async Task GlobalTeardown()
+    {
+        if (_staticBrowser != null)
+        {
+            await _staticBrowser.CloseAsync();
+            await _staticBrowser.DisposeAsync();
+            _staticBrowser = null;
+        }
+
+        _staticPlaywright?.Dispose();
+        _staticPlaywright = null;
+
+        if (_staticHost != null)
+        {
+            await _staticHost.StopAsync();
+            _staticHost.Dispose();
+            _staticHost = null;
+        }
+
+        _initialized = false;
     }
 }

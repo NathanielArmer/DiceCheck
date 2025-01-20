@@ -11,6 +11,9 @@ public partial class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        // Add services to the container.
+        builder.Services.AddControllersWithViews();
+
         // Add CORS
         builder.Services.AddCors(options =>
         {
@@ -29,12 +32,36 @@ public partial class Program
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         });
 
+        // In development, the React dev server will be used
+        if (builder.Environment.IsDevelopment())
+        {
+            builder.Services.AddCors(options =>
+            {
+                options.AddDefaultPolicy(builder =>
+                {
+                    builder.WithOrigins("http://localhost:5173") // Vite dev server default port
+                           .AllowAnyHeader()
+                           .AllowAnyMethod();
+                });
+            });
+        }
+
         var app = builder.Build();
 
-        app.UseCors();
+        // Configure the HTTP request pipeline.
+        if (!app.Environment.IsDevelopment())
+        {
+            app.UseHsts();
+        }
+        else
+        {
+            app.UseDeveloperExceptionPage();
+            app.UseCors();
+        }
 
-        // Serve static files from wwwroot
+        app.UseHttpsRedirection();
         app.UseStaticFiles();
+        app.UseRouting();
 
         // API Endpoints
         app.MapPost("/api/roll", (RollRequest request) =>
@@ -110,13 +137,8 @@ public partial class Program
             }
         });
 
-        // Fallback to index.html while preserving query parameters
-        app.MapFallback(async context =>
-        {
-            var queryString = context.Request.QueryString.Value;
-            var path = "/index.html" + queryString;
-            await context.Response.SendFileAsync(Path.Combine(app.Environment.WebRootPath, "index.html"));
-        });
+        // Serve index.html for all non-API routes to support client-side routing
+        app.MapFallbackToFile("index.html");
 
         return app;
     }

@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.dice-result {
+  transition: all 0.3s ease-in-out;
+}
+
+.dice-result.highlight {
+  transform: scale(1.1);
+  background-color: #4CAF50;
+  color: white;
+}
+
+@keyframes roll {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.rolling {
+  animation: roll 1s ease-in-out;
+}

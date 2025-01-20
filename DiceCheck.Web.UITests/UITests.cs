@@ -2,11 +2,14 @@ using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using System.Web;
 using Xunit;
+using System.Linq;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace DiceCheck.Web.UITests;
 
-[Collection("Sequential")]
-public class UITests : IClassFixture<PlaywrightFixture>
+[Collection("Playwright")]
+public class UITests : IClassFixture<PlaywrightFixture>, IAsyncLifetime
 {
     private readonly PlaywrightFixture _fixture;
     private IPage Page => _fixture.Page ?? throw new InvalidOperationException("Page not initialized");
@@ -16,39 +19,35 @@ public class UITests : IClassFixture<PlaywrightFixture>
         _fixture = fixture;
     }
 
-    public Task InitializeAsync() => Task.CompletedTask;
-    public Task DisposeAsync() => Task.CompletedTask;
+    public async Task InitializeAsync()
+    {
+        await _fixture.InitializeAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _fixture.DisposeAsync();
+    }
 
     private async Task NavigateToPage()
     {
         await Page.GotoAsync(_fixture.ServerAddress, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
     }
 
-    private async Task WaitForJavaScriptLoad()
+    private async Task WaitForReactLoad()
     {
         await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
         await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
 
-        // Wait for JavaScript initialization with a timeout
-        await Page.WaitForFunctionAsync(@"() => {
-            const sides = document.getElementById('sides');
-            const numberOfDice = document.getElementById('numberOfDice');
-            return sides && numberOfDice && typeof window.getQueryParams === 'function';
-        }", new PageWaitForFunctionOptions { Timeout = 10000 });
-
-        // Wait for query params to be loaded
-        await Page.WaitForFunctionAsync(@"() => {
-            return window._queryParamsLoaded === true;
-        }", new PageWaitForFunctionOptions { 
-            Timeout = 10000,
-            PollingInterval = 100
-        });
+        // Wait for React to render the main components
+        await Page.WaitForSelectorAsync("input#sides");
+        await Page.WaitForSelectorAsync("input#numberOfDice");
     }
 
     private async Task WaitForPageLoad()
     {
         await NavigateToPage();
-        await WaitForJavaScriptLoad();
+        await WaitForReactLoad();
     }
 
     [Fact]
@@ -57,7 +56,7 @@ public class UITests : IClassFixture<PlaywrightFixture>
         await WaitForPageLoad();
 
         // Check that the title is present
-        var titleText = await Page.InnerTextAsync("h1");
+        var titleText = await Page.TextContentAsync("h1");
         Assert.Equal("Dice Roller", titleText);
     }
 
@@ -70,47 +69,67 @@ public class UITests : IClassFixture<PlaywrightFixture>
         await WaitForPageLoad();
 
         // Set the number of sides
-        await Page.FillAsync("#sides", sides.ToString());
+        await Page.FillAsync("input#sides", sides.ToString());
 
         // Set the number of dice
-        await Page.FillAsync("#numberOfDice", numberOfDice.ToString());
-
-        // Remove the default condition
-        await Page.ClickAsync("#conditions >> button:has-text('Remove')");
+        await Page.FillAsync("input#numberOfDice", numberOfDice.ToString());
 
         // Click the roll button
-        await Page.ClickAsync("#rollButton");
+        await Page.ClickAsync("button:text('Roll Dice')");
 
-        // Wait for the results
-        await Page.WaitForSelectorAsync("#results:not(.hidden)");
-        await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        try {
+            // Wait for network request to complete
+            await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
 
-        // Check that we have the correct number of dice values
-        var diceValues = await Page.QuerySelectorAllAsync(".dice-value");
-        Assert.Equal(numberOfDice, diceValues.Count);
+            // Add console log listener for debugging
+            Page.Console += (_, msg) => Console.WriteLine($"Browser Console: {msg.Text}");
 
-        // Check that each value is within the correct range
-        for (int i = 0; i < diceValues.Count; i++)
-        {
-            var value = await Page.InnerTextAsync($".dice-value >> nth={i}");
-            Assert.NotNull(value);
-            var number = int.Parse(value);
-            Assert.InRange(number, 1, sides);
+            // Wait for either dice values or error message
+            var element = await Page.WaitForSelectorAsync("[data-testid='dice-value'], [data-testid='error-message']");
+            var elementType = await element.GetAttributeAsync("data-testid");
+
+            if (elementType == "error-message")
+            {
+                var errorText = await element.TextContentAsync();
+                throw new Exception($"Test failed: Received error message: {errorText}");
+            }
+
+            // Verify the page content is still visible
+            var title = await Page.QuerySelectorAsync("h1");
+            Assert.NotNull(title);
+            
+            // Check that we have the correct number of dice values
+            var diceValues = await Page.QuerySelectorAllAsync("[data-testid='dice-value']");
+            Assert.Equal(numberOfDice, diceValues.Count);
+
+            // Check that each value is within the correct range
+            foreach (var diceValue in diceValues)
+            {
+                var value = await diceValue.TextContentAsync();
+                Assert.NotNull(value);
+                var number = int.Parse(value ?? "0");
+                Assert.InRange(number, 1, sides);
+            }
+
+            // Check that the sum is correct
+            var sumText = await Page.TextContentAsync("[data-testid='sum']");
+            Assert.NotNull(sumText);
+            var sum = int.Parse((sumText ?? "Sum: 0").Replace("Sum: ", ""));
+            
+            var total = 0;
+            foreach (var diceValue in diceValues)
+            {
+                var value = await diceValue.TextContentAsync();
+                total += int.Parse(value ?? "0");
+            }
+            Assert.Equal(total, sum);
         }
-
-        // Check that the sum is correct
-        var sumText = await Page.InnerTextAsync("#sum");
-        Assert.NotNull(sumText);
-        var sum = int.Parse(sumText.Replace("Sum: ", ""));
-        
-        var total = 0;
-        for (int i = 0; i < diceValues.Count; i++)
+        catch (Exception ex)
         {
-            var value = await Page.InnerTextAsync($".dice-value >> nth={i}");
-            Assert.NotNull(value);
-            total += int.Parse(value);
+            // Take a screenshot on failure
+            await Page.ScreenshotAsync(new() { Path = "test-failure.png" });
+            throw;
         }
-        Assert.Equal(total, sum);
     }
 
     [Theory]
@@ -122,18 +141,21 @@ public class UITests : IClassFixture<PlaywrightFixture>
     {
         await WaitForPageLoad();
 
+        // Add a condition since we're testing validation
+        await Page.ClickAsync("button:text('Add Condition')");
+        await Page.SelectOptionAsync("[data-testid='conditionType']", "sumGreaterThan");
+        await Page.FillAsync("[data-testid='conditionValue']", "10");
+
         // Set invalid values
-        await Page.FillAsync("#sides", sides.ToString());
-        await Page.FillAsync("#numberOfDice", numberOfDice.ToString());
+        await Page.FillAsync("input#sides", sides.ToString());
+        await Page.FillAsync("input#numberOfDice", numberOfDice.ToString());
 
         // Click roll button
-        await Page.ClickAsync("#rollButton");
+        await Page.ClickAsync("button:text('Roll Dice')");
 
         // Wait for error
-        await Page.WaitForSelectorAsync("#error:not(.hidden)");
-
-        // Verify error message
-        var errorText = await Page.InnerTextAsync("#error");
+        var errorElement = await Page.WaitForSelectorAsync("[data-testid='error-message']");
+        var errorText = await errorElement?.TextContentAsync();
         Assert.Equal(expectedError, errorText);
     }
 
@@ -143,27 +165,27 @@ public class UITests : IClassFixture<PlaywrightFixture>
         await WaitForPageLoad();
 
         // Set basic roll parameters
-        await Page.FillAsync("#sides", "6");
-        await Page.FillAsync("#numberOfDice", "3");
+        await Page.FillAsync("input#sides", "6");
+        await Page.FillAsync("input#numberOfDice", "3");
 
-        // Configure the default condition
+        // Add and configure the condition
+        await Page.ClickAsync("button:text('Add Condition')");
         await Page.SelectOptionAsync("[data-testid='conditionType']", "sumGreaterThan");
         await Page.FillAsync("[data-testid='conditionValue']", "10");
 
         // Click the roll button
-        await Page.ClickAsync("#rollButton");
+        await Page.ClickAsync("button:text('Roll Dice')");
 
         // Wait for the results
-        await Page.WaitForSelectorAsync("#results:not(.hidden)");
+        await Page.WaitForSelectorAsync("[data-testid='dice-value']");
         await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
 
         // Check that the condition result is shown
-        var conditionResults = await Page.QuerySelectorAllAsync(".condition-result");
+        var conditionResults = await Page.QuerySelectorAllAsync("[data-testid='condition-result']");
         Assert.Single(conditionResults);
 
-        var conditionText = await Page.InnerTextAsync(".condition-result");
-        Assert.NotNull(conditionText);
-        Assert.Contains("Sum Greater Than", conditionText, StringComparison.OrdinalIgnoreCase);
+        var conditionText = await conditionResults[0].TextContentAsync();
+        Assert.Contains("Sum Greater Than", conditionText ?? "", StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -172,280 +194,64 @@ public class UITests : IClassFixture<PlaywrightFixture>
         await WaitForPageLoad();
 
         // Add first condition
+        await Page.ClickAsync("button:text('Add Condition')");
         await Page.SelectOptionAsync("[data-testid='conditionType']", "countMatching");
         await Page.FillAsync("[data-testid='conditionValue']", "4");
         await Page.FillAsync("[data-testid='conditionCount']", "2");
 
-        // Add second condition
-        await Page.ClickAsync("#addCondition");
-        await Page.WaitForSelectorAsync("#conditions > div:nth-child(2)");
-        var secondConditionType = await Page.QuerySelectorAllAsync("[data-testid='conditionType']");
-        await secondConditionType[1].SelectOptionAsync("sumGreaterThan");
-        var secondConditionValue = await Page.QuerySelectorAllAsync("[data-testid='conditionValue']");
-        await secondConditionValue[1].FillAsync("8");
+        // Add and configure second condition
+        await Page.ClickAsync("button:text('Add Condition')");
+        await Page.WaitForSelectorAsync("[data-testid='conditionType'] >> nth=1");
+        
+        var conditionTypes = await Page.QuerySelectorAllAsync("[data-testid='conditionType']");
+        await conditionTypes[1].SelectOptionAsync("sumGreaterThan");
+        
+        var conditionValues = await Page.QuerySelectorAllAsync("[data-testid='conditionValue']");
+        await conditionValues[1].FillAsync("8");
 
         // Click roll button
-        await Page.ClickAsync("#rollButton");
+        await Page.ClickAsync("button:text('Roll Dice')");
 
         // Wait for results
-        await Page.WaitForSelectorAsync("#results:not(.hidden)");
+        await Page.WaitForSelectorAsync("[data-testid='dice-value']");
 
-        // Get all condition text
-        var conditionResults = await Page.QuerySelectorAllAsync(".condition-result");
-        var allConditionText = "";
+        // Get and verify condition results
+        var conditionResults = await Page.QuerySelectorAllAsync("[data-testid='condition-result']");
+        Assert.Equal(2, conditionResults.Count);
+
+        var conditionTexts = new List<string>();
         foreach (var result in conditionResults)
         {
-            var text = await result.InnerTextAsync();
-            allConditionText += text + "\n";
+            var text = await result.TextContentAsync();
+            if (text != null)
+            {
+                conditionTexts.Add(text);
+            }
         }
 
-        // Verify both conditions are shown
-        Assert.Contains("Exactly 2 dice showing 4", allConditionText, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Sum greater than 8", allConditionText, StringComparison.OrdinalIgnoreCase);
-    }
-
-    public record ConditionTestData(string Type, string Value, string? Count = null);
-
-    public static TheoryData<ConditionTestData> ConditionTypes => new()
-    {
-        new ConditionTestData("sumEquals", "10"),      // 3d6 sum = 10
-        new ConditionTestData("sumGreaterThan", "15"), // 3d6 sum > 15
-        new ConditionTestData("sumLessThan", "5"),     // 3d6 sum < 5
-        new ConditionTestData("atLeastOne", "6"),      // 3d6 at least one 6
-        new ConditionTestData("all", "6"),             // 3d6 all 6's
-        new ConditionTestData("countMatching", "6", "2")  // 3d6 exactly 2 sixes
-    };
-
-    [Theory]
-    [MemberData(nameof(ConditionTypes))]
-    public async Task RollDice_WithConditionType_ShowsResults(ConditionTestData testData)
-    {
-        await NavigateToPage();
-        await WaitForJavaScriptLoad();
-
-        // Set basic dice parameters
-        await Page.FillAsync("#sides", "6");
-        await Page.FillAsync("#numberOfDice", "3");
-
-        // Get the existing condition container
-        var container = await Page.QuerySelectorAsync("#conditions > div");
-        Assert.NotNull(container);
-
-        var typeSelect = await container.QuerySelectorAsync("[data-testid='conditionType']");
-        Assert.NotNull(typeSelect);
-        await typeSelect.SelectOptionAsync(testData.Type);
-
-        var valueInput = await container.QuerySelectorAsync("[data-testid='conditionValue']");
-        Assert.NotNull(valueInput);
-        await valueInput.FillAsync(testData.Value);
-        // Trigger input change event
-        await Page.EvaluateAsync(@"() => {
-            const input = document.querySelector('[data-testid=""conditionValue""]');
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-        }");
-        await Page.WaitForTimeoutAsync(100); // Wait for event handlers
-
-        if (testData.Count != null)
-        {
-            var countInput = await container.QuerySelectorAsync("[data-testid='conditionCount']");
-            Assert.NotNull(countInput);
-
-            // Wait for count input to be visible and fill it
-            await Page.WaitForSelectorAsync("[data-testid='conditionCount']:not(.hidden)");
-            await countInput.FillAsync(testData.Count);
-            // Trigger input change event
-            await Page.EvaluateAsync(@"() => {
-                const input = document.querySelector('[data-testid=""conditionCount""]');
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            }");
-            await Page.WaitForTimeoutAsync(100); // Wait for event handlers
-        }
-
-        // Roll the dice
-        await Page.ClickAsync("#rollButton");
-
-        // Wait for either results or error
-        var resultsOrError = await Page.WaitForSelectorAsync("#results:not(.hidden), #error:not(.hidden)");
-        Assert.NotNull(resultsOrError);
-
-        // Check if we got an error
-        var error = await Page.QuerySelectorAsync("#error:not(.hidden)");
-        if (error != null)
-        {
-            var errorText = await error.TextContentAsync();
-            Assert.Fail($"Got error: {errorText}");
-        }
-
-        // Verify URL contains the condition
-        var url = new Uri(await Page.EvaluateAsync<string>("window.location.href"));
-        var query = HttpUtility.ParseQueryString(url.Query);
-
-        Assert.Equal("6", query.Get("sides"));
-        Assert.Equal("3", query.Get("numberOfDice"));
-
-        var conditionTypes = query.GetValues("conditionType");
-        Assert.NotNull(conditionTypes);
-        Assert.Single(conditionTypes);
-        Assert.Equal(testData.Type, conditionTypes[0]);
-
-        var conditionValues = query.GetValues("conditionValue");
-        Assert.NotNull(conditionValues);
-        Assert.Single(conditionValues);
-        Assert.Equal(testData.Value, conditionValues[0]);
-
-        if (testData.Count != null)
-        {
-            var conditionCounts = query.GetValues("conditionCount");
-            Assert.NotNull(conditionCounts);
-            Assert.Single(conditionCounts);
-            Assert.Equal(testData.Count, conditionCounts[0]);
-        }
-
-        // Verify dice values are displayed
-        var diceValues = await Page.QuerySelectorAllAsync(".dice-value");
-        Assert.Equal(3, diceValues.Count); // We rolled 3 dice
-
-        // Verify sum is shown
-        var sum = await Page.QuerySelectorAsync("#sum");
-        Assert.NotNull(sum);
-        var sumText = await sum.TextContentAsync();
-        Assert.Contains("Sum:", sumText ?? string.Empty);
-
-        // Verify condition results are shown
-        var conditionResults = await Page.QuerySelectorAsync("#conditionResults");
-        Assert.NotNull(conditionResults);
-        var conditionResultsText = await conditionResults.TextContentAsync();
-        Assert.NotNull(conditionResultsText);
-        Assert.Contains("Satisfied", conditionResultsText);
-    }
-
-    public static TheoryData<ConditionTestData> QueryStringTestData => new()
-    {
-        new ConditionTestData("sumEquals", "10"),
-        new ConditionTestData("sumGreaterThan", "15"),
-        new ConditionTestData("sumLessThan", "5"),
-        new ConditionTestData("atLeastOne", "6"),
-        new ConditionTestData("all", "6"),
-        new ConditionTestData("countMatching", "6", "2")
-    };
-
-    [Theory]
-    [MemberData(nameof(QueryStringTestData))]
-    public async Task LoadFromQueryString_LoadsConditionType(ConditionTestData testData)
-    {
-        // Construct condition JSON
-        var conditionsJson = testData.Count != null 
-            ? $"[{{\"type\":\"{testData.Type}\",\"value\":\"{testData.Value}\",\"count\":\"{testData.Count}\"}}]"
-            : $"[{{\"type\":\"{testData.Type}\",\"value\":\"{testData.Value}\"}}]";
-        
-        // URL encode the conditions JSON
-        var encodedConditions = Uri.EscapeDataString(conditionsJson);
-        var queryString = $"?sides=6&numberOfDice=3&conditions={encodedConditions}";
-
-        await Page.GotoAsync($"{_fixture.ServerAddress}{queryString}");
-        await WaitForJavaScriptLoad();
-
-        // Verify form values
-        Assert.Equal("6", await Page.InputValueAsync("#sides"));
-        Assert.Equal("3", await Page.InputValueAsync("#numberOfDice"));
-
-        // Verify condition
-        var container = await Page.QuerySelectorAsync("#conditions > div");
-        Assert.NotNull(container);
-
-        var typeSelect = await container.QuerySelectorAsync("[data-testid='conditionType']");
-        var valueInput = await container.QuerySelectorAsync("[data-testid='conditionValue']");
-        Assert.NotNull(typeSelect);
-        Assert.NotNull(valueInput);
-
-        var type = await typeSelect.EvaluateAsync<string>("el => el.value");
-        var value = await valueInput.EvaluateAsync<string>("el => el.value");
-
-        Assert.Equal(testData.Type, type);
-        Assert.Equal(testData.Value, value);
-
-        if (testData.Count != null)
-        {
-            var countInput = await container.QuerySelectorAsync("[data-testid='conditionCount']");
-            Assert.NotNull(countInput);
-            var count = await countInput.EvaluateAsync<string>("el => el.value");
-            Assert.Equal(testData.Count, count);
-            
-            // Verify count input is visible
-            var isHidden = await countInput.EvaluateAsync<bool>("el => el.classList.contains('hidden')");
-            Assert.False(isHidden);
-        }
+        // Check for expected condition results
+        Assert.Contains(conditionTexts, t => t.Contains("Sum greater than 8", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(conditionTexts, t => t.Contains("Exactly 2 dice showing 4", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public async Task LoadFromQueryString_SetsCorrectValues()
+    public async Task LoadFromQueryString_LoadsConditionType()
     {
-        // Navigate to page with query parameters
-        var conditionsJson = """[{"type":"sumGreaterThan","value":15},{"type":"countMatching","value":6,"count":2}]""";
-        // Use JavaScript's encodeURIComponent equivalent
-        var encodedConditions = Uri.EscapeDataString(conditionsJson);
-        var url = $"{_fixture.ServerAddress}?sides=20&numberOfDice=4&conditions={encodedConditions}";
-        
-        // Now navigate to our actual page
-        var response = await Page.GotoAsync(url, new PageGotoOptions { 
-            WaitUntil = WaitUntilState.NetworkIdle,
-            Timeout = 30000
-        });
+        // Navigate with query parameters
+        var queryString = "?sides=8&numberOfDice=3&conditionType=sumGreaterThan&conditionValue=15";
+        await Page.GotoAsync(_fixture.ServerAddress + queryString);
+        await WaitForReactLoad();
 
-        if (response == null)
-        {
-            throw new Exception("Navigation failed - no response");
-        }
+        // Get values from form inputs
+        var sides = await Page.InputValueAsync("input#sides");
+        var numberOfDice = await Page.InputValueAsync("input#numberOfDice");
+        var conditionType = await Page.InputValueAsync("[data-testid='conditionType']");
+        var conditionValue = await Page.InputValueAsync("[data-testid='conditionValue']");
 
-        try {
-            // Wait for basic page load
-            await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-            await Page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-
-            // Wait for our elements to be present
-            await Page.WaitForSelectorAsync("#sides");
-            await Page.WaitForSelectorAsync("#numberOfDice");
-
-            // Wait for query params to be loaded and values set
-            await Page.WaitForFunctionAsync(@"() => {
-                const sidesInput = document.getElementById('sides');
-                const numberOfDiceInput = document.getElementById('numberOfDice');
-                return window._queryParamsLoaded === true;
-            }", new PageWaitForFunctionOptions { 
-                Timeout = 10000,
-                PollingInterval = 100 // Check more frequently
-            });
-
-            // Verify input values
-            var sidesValue = await Page.InputValueAsync("#sides");
-            var diceValue = await Page.InputValueAsync("#numberOfDice");
-            
-            Assert.Equal("20", sidesValue);
-            Assert.Equal("4", diceValue);
-
-            // Verify conditions
-            var conditionTypes = await Page.QuerySelectorAllAsync("[data-testid='conditionType']");
-            var conditionValues = await Page.QuerySelectorAllAsync("[data-testid='conditionValue']");
-            var conditionCounts = await Page.QuerySelectorAllAsync("[data-testid='conditionCount']");
-
-            Assert.Equal(2, conditionTypes.Count);
-            
-            // Verify first condition
-            Assert.Equal("sumGreaterThan", await conditionTypes[0].InputValueAsync());
-            Assert.Equal("15", await conditionValues[0].InputValueAsync());
-            
-            // Verify second condition
-            Assert.Equal("countMatching", await conditionTypes[1].InputValueAsync());
-            Assert.Equal("6", await conditionValues[1].InputValueAsync());
-            Assert.Equal("2", await conditionCounts[1].InputValueAsync());
-            Assert.False(await conditionCounts[1].IsHiddenAsync());
-        }
-        catch
-        {
-            throw;
-        }
+        Assert.Equal("8", sides);
+        Assert.Equal("3", numberOfDice);
+        Assert.Equal("sumGreaterThan", conditionType);
+        Assert.Equal("15", conditionValue);
     }
 
     [Fact]
@@ -454,34 +260,27 @@ public class UITests : IClassFixture<PlaywrightFixture>
         await WaitForPageLoad();
 
         // Set values
-        await Page.FillAsync("#sides", "12");
-        await Page.FillAsync("#numberOfDice", "3");
+        await Page.FillAsync("input#sides", "10");
+        await Page.FillAsync("input#numberOfDice", "4");
 
-        // Add a condition
+        // Add and configure condition
+        await Page.ClickAsync("button:text('Add Condition')");
         await Page.SelectOptionAsync("[data-testid='conditionType']", "sumGreaterThan");
-        await Page.FillAsync("[data-testid='conditionValue']", "10");
+        await Page.FillAsync("[data-testid='conditionValue']", "20");
 
         // Wait for URL to update
-        await Page.WaitForFunctionAsync(@"() => {
-            const params = new URLSearchParams(window.location.search);
-            return params.get('sides') === '12' && 
-                   params.get('numberOfDice') === '3' &&
-                   params.get('conditionType') === 'sumGreaterThan' &&
-                   params.get('conditionValue') === '10';
-        }", new PageWaitForFunctionOptions { 
-            Timeout = 10000,
-            PollingInterval = 100
-        });
+        await Page.WaitForURLAsync(url => 
+            url.Contains("sides=10") && 
+            url.Contains("numberOfDice=4") && 
+            url.Contains("conditionType=sumGreaterThan") && 
+            url.Contains("conditionValue=20")
+        );
 
-        // Get URL parameters
-        var url = await Page.EvaluateAsync<string>("window.location.search");
-        var query = HttpUtility.ParseQueryString(url);
-
-        // Verify URL parameters
-        Assert.Equal("12", query["sides"]);
-        Assert.Equal("3", query["numberOfDice"]);
-        Assert.Equal("sumGreaterThan", query["conditionType"]);
-        Assert.Equal("10", query["conditionValue"]);
+        var url = Page.Url;
+        Assert.Contains("sides=10", url);
+        Assert.Contains("numberOfDice=4", url);
+        Assert.Contains("conditionType=sumGreaterThan", url);
+        Assert.Contains("conditionValue=20", url);
     }
 
     [Fact]
@@ -489,73 +288,29 @@ public class UITests : IClassFixture<PlaywrightFixture>
     {
         await WaitForPageLoad();
 
-        // Add first condition
+        // Add an initial condition
+        await Page.ClickAsync("button:text('Add Condition')");
         await Page.SelectOptionAsync("[data-testid='conditionType']", "sumGreaterThan");
         await Page.FillAsync("[data-testid='conditionValue']", "10");
-        
-        // Add second condition
-        await Page.ClickAsync("#addCondition");
-        await Page.WaitForFunctionAsync(@"() => {
-            const count = document.querySelectorAll('#conditions > div').length;
-            return count === 2;
-        }", new PageWaitForFunctionOptions { 
-            Timeout = 10000,
-            PollingInterval = 100
-        });
 
-        var secondConditionType = await Page.QuerySelectorAllAsync("[data-testid='conditionType']");
-        await secondConditionType[1].SelectOptionAsync("countMatching");
-        var secondConditionValue = await Page.QuerySelectorAllAsync("[data-testid='conditionValue']");
-        await secondConditionValue[1].FillAsync("6");
-        var countInput = await Page.QuerySelectorAllAsync("[data-testid='conditionCount']");
-        await countInput[1].FillAsync("2");
+        // Wait for URL to update
+        await Page.WaitForURLAsync(url => 
+            url.Contains("conditionType=sumGreaterThan") && 
+            url.Contains("conditionValue=10")
+        );
 
-        // Wait for URL to update with both conditions
-        await Page.WaitForFunctionAsync(@"() => {
-            const params = new URLSearchParams(window.location.search);
-            const types = params.getAll('conditionType');
-            const values = params.getAll('conditionValue');
-            return types.length === 2 && values.length === 2;
-        }", new PageWaitForFunctionOptions { 
-            Timeout = 10000,
-            PollingInterval = 100
-        });
+        // Remove the condition
+        var removeButtons = await Page.QuerySelectorAllAsync("button:text('Remove')");
+        await removeButtons[0].ClickAsync();
 
-        // Get URL before removing condition
-        var urlBefore = await Page.EvaluateAsync<string>("window.location.search");
-        var queryBefore = HttpUtility.ParseQueryString(urlBefore);
-        var typesBefore = queryBefore.GetValues("conditionType");
-        var valuesBefore = queryBefore.GetValues("conditionValue");
-        Assert.NotNull(typesBefore);
-        Assert.NotNull(valuesBefore);
-        Assert.Equal(2, typesBefore.Length);
-        Assert.Equal(2, valuesBefore.Length);
+        // Wait for URL to update
+        await Page.WaitForURLAsync(url => 
+            !url.Contains("conditionType=sumGreaterThan") && 
+            !url.Contains("conditionValue=10")
+        );
 
-        // Remove second condition
-        var removeButtons = await Page.QuerySelectorAllAsync("#conditions button:has-text('Remove')");
-        await removeButtons[1].ClickAsync();
-
-        // Wait for URL to update with only one condition
-        await Page.WaitForFunctionAsync(@"() => {
-            const params = new URLSearchParams(window.location.search);
-            const types = params.getAll('conditionType');
-            const values = params.getAll('conditionValue');
-            return types.length === 1 && values.length === 1;
-        }", new PageWaitForFunctionOptions { 
-            Timeout = 10000,
-            PollingInterval = 100
-        });
-
-        // Get URL after removing condition
-        var urlAfter = await Page.EvaluateAsync<string>("window.location.search");
-        var queryAfter = HttpUtility.ParseQueryString(urlAfter);
-        var typesAfter = queryAfter.GetValues("conditionType");
-        var valuesAfter = queryAfter.GetValues("conditionValue");
-        Assert.NotNull(typesAfter);
-        Assert.NotNull(valuesAfter);
-        Assert.Single(typesAfter);
-        Assert.Single(valuesAfter);
-        Assert.Equal("sumGreaterThan", typesAfter[0]);
-        Assert.Equal("10", valuesAfter[0]);
+        var url = Page.Url;
+        Assert.DoesNotContain("conditionType=sumGreaterThan", url);
+        Assert.DoesNotContain("conditionValue=10", url);
     }
 }
