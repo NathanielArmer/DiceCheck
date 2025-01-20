@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dice Roller</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .dice-result {
+            transition: all 0.3s ease-in-out;
+        }
+        .dice-result.highlight {
+            transform: scale(1.1);
+            background-color: #4CAF50;
+            color: white;
+        }
+        @keyframes roll {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .rolling {
+            animation: roll 1s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-4xl font-bold text-center mb-8 text-gray-800">Dice Roller</h1>
+        
+        <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-lg p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2" for="sides">Number of Sides:</label>
+                    <input type="number" id="sides" value="6" min="1" max="100"
+                           class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2" for="numberOfDice">Number of Dice:</label>
+                    <input type="number" id="numberOfDice" value="2" min="1" max="100"
+                           class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+            </div>
+
+            <div class="mb-6">
+                <label class="block text-gray-700 text-sm font-bold mb-2">Conditions:</label>
+                <div id="conditions" class="space-y-4">
+                    <!-- Conditions will be added here -->
+                </div>
+                <button id="addCondition" onclick="addCondition()" class="mt-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500">
+                    Add Condition
+                </button>
+            </div>
+
+            <button id="rollButton" onclick="rollDice()" class="w-full px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                Roll Dice
+            </button>
+
+            <div id="results" class="mt-8 hidden">
+                <h2 class="text-2xl font-bold mb-4 text-gray-800">Results</h2>
+                <div id="diceResults" class="grid grid-cols-3 md:grid-cols-5 gap-4">
+                    <!-- Results will be added here -->
+                </div>
+                <div id="sum" class="mt-4 text-xl font-bold text-gray-800"></div>
+                <div id="conditionResults" class="mt-4 space-y-2">
+                    <!-- Condition results will be added here -->
+                </div>
+            </div>
+
+            <div id="error" class="mt-4 p-4 bg-red-100 text-red-800 rounded-lg hidden"></div>
+        </div>
+    </div>
+
+    <script>
+        function getQueryParams() {
+            console.log('Raw search:', window.location.search);
+            const params = new URLSearchParams(window.location.search);
+            console.log('Raw params:', JSON.stringify(Object.fromEntries(params.entries()), null, 2));
+            
+            // Get and parse each parameter, with proper decoding
+            const sides = parseInt(params.get('sides')) || 6;
+            const numberOfDice = parseInt(params.get('numberOfDice')) || 2;
+            const conditionsStr = params.get('conditions');
+            console.log('Raw conditions string:', conditionsStr);
+            
+            let conditions = [];
+            if (conditionsStr) {
+                try {
+                    conditions = JSON.parse(conditionsStr);
+                    console.log('Parsed conditions:', JSON.stringify(conditions, null, 2));
+                } catch (e) {
+                    console.error('Failed to parse conditions:', e);
+                    conditions = [];
+                }
+            }
+            
+            const result = {
+                sides,
+                numberOfDice,
+                conditions
+            };
+            
+            console.log('Final parsed params:', JSON.stringify(result, null, 2));
+            return result;
+        }
+
+        function updateQueryString(sides, numberOfDice, conditions) {
+            const params = new URLSearchParams();
+            params.set('sides', sides);
+            params.set('numberOfDice', numberOfDice);
+            params.set('conditions', JSON.stringify(conditions));
+            console.log('Updating URL with conditions:', JSON.stringify(conditions, null, 2));
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.replaceState({}, '', newUrl);
+            console.log('New URL:', newUrl);
+        }
+
+        function addCondition(condition = null) {
+            const container = document.createElement('div');
+            container.className = 'flex flex-wrap gap-2 items-center bg-gray-50 p-3 rounded-lg';
+            
+            const typeSelect = document.createElement('select');
+            typeSelect.className = 'px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500';
+            typeSelect.setAttribute('data-testid', 'conditionType');
+            
+            const options = [
+                { value: 'sumGreaterThan', text: 'Sum greater than' },
+                { value: 'sumLessThan', text: 'Sum less than' },
+                { value: 'countMatching', text: 'Count matching' }
+            ];
+            
+            options.forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.text;
+                typeSelect.appendChild(option);
+            });
+            
+            const valueInput = document.createElement('input');
+            valueInput.type = 'number';
+            valueInput.className = 'w-20 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500';
+            valueInput.setAttribute('data-testid', 'conditionValue');
+            
+            const countInput = document.createElement('input');
+            countInput.type = 'number';
+            countInput.className = 'w-20 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500';
+            countInput.setAttribute('data-testid', 'conditionCount');
+            countInput.style.display = 'none';
+            
+            const removeButton = document.createElement('button');
+            removeButton.textContent = 'Remove';
+            removeButton.className = 'px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500';
+            removeButton.onclick = () => removeCondition(removeButton);
+            
+            container.appendChild(typeSelect);
+            container.appendChild(valueInput);
+            container.appendChild(countInput);
+            container.appendChild(removeButton);
+            
+            document.getElementById('conditions').appendChild(container);
+            
+            // Add event listeners for URL updates
+            typeSelect.addEventListener('change', () => {
+                window._queryParamsLoaded = true;
+                updateUrlFromInputs();
+                const isCountMatching = typeSelect.value === 'countMatching';
+                countInput.style.display = isCountMatching ? 'block' : 'none';
+            });
+            
+            valueInput.addEventListener('input', () => {
+                window._queryParamsLoaded = true;
+                updateUrlFromInputs();
+            });
+            
+            countInput.addEventListener('input', () => {
+                window._queryParamsLoaded = true;
+                updateUrlFromInputs();
+            });
+            
+            if (condition) {
+                typeSelect.value = condition.type;
+                valueInput.value = condition.value;
+                if (condition.type === 'countMatching') {
+                    countInput.style.display = 'block';
+                    countInput.value = condition.count;
+                }
+            }
+            
+            window._queryParamsLoaded = true;
+            updateUrlFromInputs();
+        }
+
+        function removeCondition(button) {
+            button.parentElement.remove();
+            window._queryParamsLoaded = true; // Ensure we know URL updates are intentional
+            updateUrlFromInputs();
+        }
+
+        function updateUrlFromInputs() {
+            const sides = parseInt(document.getElementById('sides').value);
+            const numberOfDice = parseInt(document.getElementById('numberOfDice').value);
+            const conditions = [];
+            
+            document.querySelectorAll('#conditions > div').forEach(container => {
+                const type = container.querySelector('[data-testid="conditionType"]').value;
+                const value = parseInt(container.querySelector('[data-testid="conditionValue"]').value);
+                
+                if (!isNaN(value)) {
+                    if (type === 'countMatching') {
+                        const count = parseInt(container.querySelector('[data-testid="conditionCount"]').value);
+                        if (!isNaN(count)) {
+                            conditions.push({ type, value, count });
+                        }
+                    } else {
+                        conditions.push({ type, value });
+                    }
+                }
+            });
+
+            console.log('Updating URL with conditions:', JSON.stringify(conditions, null, 2));
+            updateQueryString(sides, numberOfDice, conditions);
+        }
+
+        async function rollDice() {
+            const sides = parseInt(document.getElementById('sides').value);
+            const numberOfDice = parseInt(document.getElementById('numberOfDice').value);
+            
+            // Clear previous results and errors
+            const results = document.getElementById('results');
+            const error = document.getElementById('error');
+            results.classList.add('hidden');
+            error.classList.add('hidden');
+
+            // Validate inputs
+            if (sides <= 0) {
+                error.textContent = "Number of sides must be positive";
+                error.classList.remove('hidden');
+                return;
+            }
+
+            if (numberOfDice <= 0) {
+                error.textContent = "Number of dice must be positive";
+                error.classList.remove('hidden');
+                return;
+            }
+            
+            // Collect conditions
+            const conditions = [];
+            document.querySelectorAll('#conditions > div').forEach(container => {
+                const type = container.querySelector('[data-testid="conditionType"]').value;
+                const valueInput = container.querySelector('[data-testid="conditionValue"]');
+                const value = parseInt(valueInput.value);
+                const countInput = container.querySelector('[data-testid="conditionCount"]');
+                
+                if (isNaN(value)) {
+                    throw new Error(`Please enter a valid number for condition value`);
+                }
+                
+                if (type === 'countMatching') {
+                    const count = parseInt(countInput.value);
+                    if (isNaN(count)) {
+                        throw new Error(`Please enter a valid number for count`);
+                    }
+                    conditions.push({ type: type, value: value, count: count });
+                } else {
+                    conditions.push({ type: type, value: value });
+                }
+            });
+
+            try {
+                console.log('Sending request:', { sides, numberOfDice, conditions });
+                const response = await fetch('/api/roll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sides, numberOfDice, conditions })
+                });
+
+                const responseText = await response.text();
+                console.log('Response:', response.status, responseText);
+
+                if (!response.ok) {
+                    throw new Error(responseText);
+                }
+                
+                const result = JSON.parse(responseText);
+                console.log('Received response:', result);
+                displayResults(result);
+            } catch (error) {
+                console.error('Error:', error);
+                const errorElement = document.getElementById('error');
+                errorElement.classList.remove('hidden');
+                errorElement.textContent = error.message;
+            }
+        }
+
+        function displayResults(result) {
+            const container = document.getElementById('diceResults');
+            container.innerHTML = '';
+            
+            result.values.forEach(value => {
+                const die = document.createElement('div');
+                die.className = 'dice-value dice-result bg-gray-200 rounded-lg p-4 text-center text-2xl font-bold rolling';
+                die.textContent = value;
+                container.appendChild(die);
+                
+                // Remove animation class after it completes
+                setTimeout(() => die.classList.remove('rolling'), 1000);
+            });
+
+            document.getElementById('sum').textContent = `Sum: ${result.sum}`;
+
+            const conditionResults = document.getElementById('conditionResults');
+            conditionResults.innerHTML = '';
+            
+            if (result.conditions) {
+                result.conditions.forEach(condition => {
+                    const div = document.createElement('div');
+                    div.className = `condition-result p-2 rounded-lg ${condition.satisfied ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`;
+                    div.textContent = `${condition.condition}: ${condition.satisfied ? 'Satisfied' : 'Not Satisfied'}`;
+                    conditionResults.appendChild(div);
+                });
+            }
+
+            // Show results
+            document.getElementById('results').classList.remove('hidden');
+        }
+
+        // Initialize form from URL parameters
+        function initializeFromUrl() {
+            console.log('initializeFromUrl called');
+            const params = getQueryParams();
+            console.log('Parsed params:', params);
+            
+            const sidesInput = document.getElementById('sides');
+            const numberOfDiceInput = document.getElementById('numberOfDice');
+            
+            if (!sidesInput || !numberOfDiceInput) {
+                console.error('Input elements not found!');
+                return;
+            }
+            
+            sidesInput.value = params.sides;
+            numberOfDiceInput.value = params.numberOfDice;
+            console.log('Set sides to:', sidesInput.value);
+            console.log('Set numberOfDice to:', numberOfDiceInput.value);
+            
+            // Clear any default conditions
+            document.getElementById('conditions').innerHTML = '';
+            
+            // Add conditions from URL
+            if (params.conditions.length > 0) {
+                params.conditions.forEach(condition => addCondition(condition));
+            } else {
+                // Add one default condition if none in URL
+                addCondition();
+            }
+
+            // Add change listeners to update URL
+            sidesInput.addEventListener('change', updateUrlFromInputs);
+            numberOfDiceInput.addEventListener('change', updateUrlFromInputs);
+
+            // Update URL with default values if no query string
+            if (window.location.search === '') {
+                updateUrlFromInputs();
+            }
+
+            window._queryParamsLoaded = true;
+            console.log('Query params loaded and values set');
+        }
+
+        // Initialize the page when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initializeFromUrl);
+        } else {
+            initializeFromUrl();
+        }
+    </script>
+</body>
+</html>

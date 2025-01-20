@@ -60,12 +60,14 @@ public record RollCondition(ConditionType Type, ConditionValue Value)
 
     public override string ToString() => Type switch
     {
-        ConditionType.SumEquals => $"sum equals {Value}",
-        ConditionType.SumGreaterThan => $"sum greater than {Value}",
-        ConditionType.SumLessThan => $"sum less than {Value}",
-        ConditionType.AtLeastOne => $"at least one {Value}",
-        ConditionType.All => $"all {Value}s",
-        ConditionType.CountMatching => $"exactly {Value}",
+        ConditionType.SumEquals => $"Sum equals {Value.Value}",
+        ConditionType.SumGreaterThan => $"Sum greater than {Value.Value}",
+        ConditionType.SumLessThan => $"Sum less than {Value.Value}",
+        ConditionType.AtLeastOne => $"At least one die showing {Value.Value}",
+        ConditionType.All => $"All dice showing {Value.Value}",
+        ConditionType.CountMatching => Value.Count.HasValue ? 
+            $"Exactly {Value.Count.Value} dice showing {Value.Value}" :
+            $"Count matching {Value.Value}",
         _ => base.ToString()!
     };
 }
